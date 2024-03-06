@@ -1,113 +1,382 @@
-import Image from "next/image";
+'use client';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useWallet } from '@solana/wallet-adapter-react';
+import { UnifiedWalletButton, WalletName } from '@jup-ag/wallet-adapter';
+import { getAccountNfts, getAccountNftsObject, getAddressNftDetails, getAddressSOLBalance, getNftTransferTxs, getRPCEndpoint, getToken2022TransferTxs, getTokenTransferTxs, getUserToken2022s, getUserTokens } from '../../utils';
+import { Hourglass } from "react-loader-spinner";
+import { Connection, PublicKey, Transaction, sendAndConfirmRawTransaction, sendAndConfirmTransaction } from '@solana/web3.js';
+import { ReadApiAsset, Metaplex, PublicKey as MetaPublicKey, token, Signer, walletAdapterIdentity } from '@metaplex-foundation/js';
+import { getAssetWithProof, mplBubblegum, transfer } from '@metaplex-foundation/mpl-bubblegum';
+import { createUmi } from "@metaplex-foundation/umi-bundle-defaults";
+import { publicKey as convertToUmiPublicKey, PublicKey as UmiPublicKey } from "@metaplex-foundation/umi-public-keys";
+import { createSignerFromWalletAdapter } from "@metaplex-foundation/umi-signer-wallet-adapters";
+import { signerIdentity } from '@metaplex-foundation/umi';
 
-export default function Home() {
-  return (
-    <main className="flex min-h-screen flex-col items-center justify-between p-24">
-      <div className="z-10 max-w-5xl w-full items-center justify-between font-mono text-sm lg:flex">
-        <p className="fixed left-0 top-0 flex w-full justify-center border-b border-gray-300 bg-gradient-to-b from-zinc-200 pb-6 pt-8 backdrop-blur-2xl dark:border-neutral-800 dark:bg-zinc-800/30 dark:from-inherit lg:static lg:w-auto  lg:rounded-xl lg:border lg:bg-gray-200 lg:p-4 lg:dark:bg-zinc-800/30">
-          Get started by editing&nbsp;
-          <code className="font-mono font-bold">src/app/page.tsx</code>
-        </p>
-        <div className="fixed bottom-0 left-0 flex h-48 w-full items-end justify-center bg-gradient-to-t from-white via-white dark:from-black dark:via-black lg:static lg:h-auto lg:w-auto lg:bg-none">
-          <a
-            className="pointer-events-none flex place-items-center gap-2 p-8 lg:pointer-events-auto lg:p-0"
-            href="https://vercel.com?utm_source=create-next-app&utm_medium=appdir-template&utm_campaign=create-next-app"
-            target="_blank"
-            rel="noopener noreferrer"
-          >
-            By{" "}
-            <Image
-              src="/vercel.svg"
-              alt="Vercel Logo"
-              className="dark:invert"
-              width={100}
-              height={24}
-              priority
-            />
-          </a>
-        </div>
+const Page = () => {
+  const { wallet, publicKey, disconnect, signAllTransactions, sendTransaction } = useWallet();
+  const [isLoading, setIsLoading] = useState(false);
+  const [migrateTo, setMigrateTo] = useState("");
+  const [mintData, setMintData] = useState<{
+    [mintAddress: string]: {
+        amount: number;
+        decimals: number;
+    };
+  }>({});
+  const [mintData2022, setMintData2022] = useState<{
+    [mintAddress: string]: {
+        amount: number;
+        decimals: number;
+    };
+  }>({});
+  const [solBalance, setSolBalance] = useState(0);
+  const [nftData, setNftData] = useState<{
+    [mintAddress: string]: string;
+  }>({});
+  const [cNFTIds, setcNFTIds] = useState<string[]>([]);
+  const lastKey = useRef("");
+
+  const isOnCurve = useMemo(() => {
+    try {
+      return PublicKey.isOnCurve(migrateTo);
+    }
+
+    catch {
+      return false;
+    }
+  }, [migrateTo]);
+
+  const transferToken2022s = useCallback(async() => {
+      if(!publicKey) {
+        return;
+      }
+
+      if(Object.keys(mintData2022).length === 0) {
+        return;
+      }
+
+      let connection = new Connection(getRPCEndpoint());
+      let tx = await getToken2022TransferTxs(publicKey.toBase58(), migrateTo);
+      if(tx.instructions.length === 0) {
+        return;
+      }
+      let { lastValidBlockHeight, blockhash } = await connection.getLatestBlockhash('finalized');
+      tx.recentBlockhash = blockhash;
+      tx.lastValidBlockHeight = lastValidBlockHeight;
+      tx.feePayer = publicKey;
+      await sendTransaction(tx, connection);
+  }, [ publicKey, sendTransaction, migrateTo, mintData2022 ]);
+
+  const transferTokens = useCallback(async() => {
+      if(!publicKey) {
+        return;
+      }
+
+      if(Object.keys(mintData).length === 0) {
+        return;
+      }
+      
+      let connection = new Connection(getRPCEndpoint());
+      let tx = await getTokenTransferTxs(publicKey.toBase58(), migrateTo);
+      let { lastValidBlockHeight, blockhash } = await connection.getLatestBlockhash('finalized');
+      tx.recentBlockhash = blockhash;
+      tx.lastValidBlockHeight = lastValidBlockHeight;
+      tx.feePayer = publicKey;
+      await sendTransaction(tx, connection);
+  }, [ publicKey, sendTransaction, migrateTo, mintData ]);
+
+  const transferNfts = useCallback(async() => {
+      if(!publicKey) {
+        return;
+      }
+
+      if(!signAllTransactions) {
+        return;
+      }
+
+      if(Object.keys(nftData).length === 0) {
+        return;
+      }
+      
+      let nfts = await getAccountNfts(publicKey.toBase58());
+      let txs: Transaction[] = [];
+      let connection = new Connection(getRPCEndpoint());
+      const metaplex = new Metaplex(connection);
+      metaplex.use(walletAdapterIdentity({
+          publicKey,
+          signTransaction: async (tx) => tx,
+      }));    
+
+      const feePayer: Signer = {
+          publicKey,
+          signTransaction: async (tx) => tx,
+          signMessage: async (msg) => msg,
+          signAllTransactions: async (txs) => txs,
+      };
+
+      let tx = new Transaction();
+
+      let count = 0;
+      for(const nft of nfts) {
+
+          count++;  
+          const txBuilder = metaplex.nfts().builders().transfer({
+              nftOrSft: nft,
+              fromOwner: publicKey,
+              toOwner: new PublicKey(migrateTo),
+              amount: token(1),
+              authority: feePayer,
+          });
+
+          let ixs = txBuilder.getInstructions();
+          tx.add(...ixs);
+
+          // txs cant get too large
+          if(count == 3) {
+            count = 0;
+            let {blockhash, lastValidBlockHeight} = await connection.getLatestBlockhash('finalized');
+            tx.recentBlockhash = blockhash;
+            tx.lastValidBlockHeight = lastValidBlockHeight;
+            tx.feePayer = publicKey;
+            try {
+              await sendTransaction(tx, connection);
+            }
+
+            catch(e) {
+              console.log(e);
+            }
+            tx = new Transaction();
+            continue;
+          }
+      }
+      let {blockhash, lastValidBlockHeight} = await connection.getLatestBlockhash('finalized');
+      tx.recentBlockhash = blockhash;
+      tx.lastValidBlockHeight = lastValidBlockHeight;
+      tx.feePayer = publicKey;
+      await sendTransaction(tx, connection);
+  }, [ publicKey, sendTransaction, migrateTo, nftData, signAllTransactions ]);
+
+  const transfercNFTs = useCallback(async() => {
+    if(!publicKey) {
+        return;
+    }
+
+    if(!cNFTIds || cNFTIds.length === 0) {
+        return;
+    }
+
+    if(!wallet) {
+        return;
+    }
+
+    const umi = createUmi(getRPCEndpoint());
+    const signer = createSignerFromWalletAdapter(wallet.adapter);
+    umi.use(mplBubblegum());
+    umi.use(signerIdentity(signer));
+
+    for(const id of cNFTIds) {
+        try {
+            const assetWithProof = await getAssetWithProof(umi, convertToUmiPublicKey(id));
+            await transfer(umi, {
+              ...assetWithProof,
+              leafOwner: convertToUmiPublicKey(publicKey.toBase58()),
+              newLeafOwner: convertToUmiPublicKey(migrateTo),
+            }).sendAndConfirm(umi);
+        }
+
+        catch {
+            continue;
+        }
+    }
+
+  }, [cNFTIds, migrateTo, publicKey, wallet]);
+
+  const getData = useCallback(async() => {
+    if(!publicKey) {
+      return;
+    }
+    setIsLoading(true);
+    let mintData = await getUserTokens(publicKey);
+    let solBalance = await getAddressSOLBalance(publicKey.toBase58());
+    let mintData2022 = await getUserToken2022s(publicKey);
+    setMintData(mintData);
+    setMintData2022(mintData2022);
+    setSolBalance(solBalance);
+    let nfts = await getAccountNftsObject(publicKey.toBase58());
+    setNftData(nfts);
+    const cNFTs = (await getAddressNftDetails(publicKey.toBase58())).filter(x => x.compression.compressed);
+    if(cNFTs.length !== 0) {
+      setcNFTIds(cNFTs.map(x => x.id));
+    }
+    setIsLoading(false);
+  }, [publicKey]);
+
+  const migrate = useCallback(async() => {
+    if(!isOnCurve) {
+      return;
+    }
+
+    if(!publicKey) {
+      return;
+    }
+
+    if(!signAllTransactions) {
+      return;
+    }
+
+    // first transfer all tokens
+    console.log('transferring 2022');
+    // await transferToken2022s();
+    console.log('transferring normal');
+    // await transferTokens();
+    console.log('transferring nfts');
+    // await transferNfts();
+    console.log('transferring cNFTs');
+    await transfercNFTs();
+    console.log('closing accounts');
+    console.log('transferring SOLs');
+
+    /* txs.forEach((tx, index) => {
+      txs[index].recentBlockhash = blockhash;
+      txs[index].lastValidBlockHeight = lastValidBlockHeight;
+      txs[index].feePayer = publicKey;
+    }); */
+    /* let signed = await signAllTransactions(txs);
+
+    for(const tx of signed) {
+      let signature = await sendTransaction(tx, connection);
+      console.log(signature);
+    }
+ */
+    // second close all accounts
+
+    // third transfer all cNFTs
+
+    // forth transfer all SOLs
+    
+
+  }, [isOnCurve, publicKey, signAllTransactions, transferToken2022s, transferTokens, transferNfts ]);
+
+  useEffect(() => {
+    if(publicKey?.toBase58() === lastKey.current) {
+      return;
+    }
+
+    lastKey.current = publicKey?.toBase58() ?? "";
+    getData();
+  }, [publicKey, getData]);
+
+	return (
+		<div className="min-h-[100vh] w-100 flex items-center justify-center flex-1">
+      <div className="flex-1 flex flex-col justify-center items-center">
+          <input 
+            className={`text-black p-1 w-[50vw] outline-none ${isOnCurve? '' : 'border-red-500 border-2 text-red-500'}`}
+            type="text" 
+            placeholder='Migrate to this address'
+            onChange={({ target }) => { setMigrateTo(target.value) }}
+          />
+          {
+            !isOnCurve &&
+            <span className='text-red-300'>Invalid Address!</span>
+          }
+          <div className="mt-10"></div>
+          {
+            !publicKey &&
+            <>
+            <span>Select a wallet to migrate from</span>
+            <div className="border-[1px] border-black rounded mt-3">
+                <UnifiedWalletButton/>
+            </div>
+            </>
+          }
+          {
+            publicKey &&
+            <>
+            <span className='mb-5'>Current Address: {publicKey?.toBase58()}</span>
+
+            {
+              isLoading &&
+              <Hourglass
+                  visible={true}
+                  height="80"
+                  width="80"
+                  ariaLabel="hourglass-loading"
+                  wrapperStyle={{}}
+                  wrapperClass=""
+                  colors={['#306cce', '#72a1ed']}
+              />
+            }
+
+            {
+              !isLoading &&
+              mintData &&
+              <div className='items-center justify-center flex flex-col'>
+                <div className='flex flex-row space-x-3 items-center mb-3'>
+                  <span className='text-xl font-bold text-center'>Found {solBalance} SOL, {Object.keys(mintData).length} Token(s), {Object.keys(mintData2022).length} Token 2022(s), {Object.keys(nftData).length} NFT(s), and {cNFTIds.length} cNFTs</span>
+                  <button className='rounded bg-green-600 px-3 py-2' onClick={migrate}>Migrate</button>
+                </div>
+
+                {
+                    Object.keys(mintData).length > 0 &&
+                    <div className='text-lg'>
+                      Token Details
+                    </div>
+                }
+                {
+                  Object.entries(mintData).map(x => {
+                    let mintAddress = x[0];
+                    let { decimals, amount } = x[1];
+
+                    return (
+                      <div key={mintAddress}>
+                        <span>{amount.toFixed(8)} {mintAddress}</span>
+                      </div>
+                    )
+                  })
+                }
+                {
+                    Object.keys(mintData2022).length > 0 &&
+                    <div className='text-lg mt-3'>
+                      Token 2022 Details
+                    </div>
+                }
+                {
+                  Object.entries(mintData2022).map(x => {
+                    let mintAddress = x[0];
+                    let { decimals, amount } = x[1];
+
+                    return (
+                      <div key={mintAddress}>
+                        <span>{amount.toFixed(8)} {mintAddress}</span>
+                      </div>
+                    )
+                  })
+                }
+                {
+                    Object.keys(nftData).length > 0 &&
+                    <div className='text-lg mt-3'>
+                      NFT Details
+                    </div>
+                }
+                {
+                  Object.entries(nftData).map(x => {
+                    let mintAddress = x[0];
+                    let name = x[1];
+
+                    return (
+                      <div key={mintAddress}>
+                        <span>{name}</span>
+                      </div>
+                    )
+                  })
+                }
+              </div>
+            }
+            </>
+          }
+
       </div>
+		</div>
+	);
+};
 
-      <div className="relative flex place-items-center before:absolute before:h-[300px] before:w-full sm:before:w-[480px] before:-translate-x-1/2 before:rounded-full before:bg-gradient-radial before:from-white before:to-transparent before:blur-2xl before:content-[''] after:absolute after:-z-20 after:h-[180px] after:w-full sm:after:w-[240px] after:translate-x-1/3 after:bg-gradient-conic after:from-sky-200 after:via-blue-200 after:blur-2xl after:content-[''] before:dark:bg-gradient-to-br before:dark:from-transparent before:dark:to-blue-700 before:dark:opacity-10 after:dark:from-sky-900 after:dark:via-[#0141ff] after:dark:opacity-40 before:lg:h-[360px] z-[-1]">
-        <Image
-          className="relative dark:drop-shadow-[0_0_0.3rem_#ffffff70] dark:invert"
-          src="/next.svg"
-          alt="Next.js Logo"
-          width={180}
-          height={37}
-          priority
-        />
-      </div>
-
-      <div className="mb-32 grid text-center lg:max-w-5xl lg:w-full lg:mb-0 lg:grid-cols-4 lg:text-left">
-        <a
-          href="https://nextjs.org/docs?utm_source=create-next-app&utm_medium=appdir-template&utm_campaign=create-next-app"
-          className="group rounded-lg border border-transparent px-5 py-4 transition-colors hover:border-gray-300 hover:bg-gray-100 hover:dark:border-neutral-700 hover:dark:bg-neutral-800/30"
-          target="_blank"
-          rel="noopener noreferrer"
-        >
-          <h2 className={`mb-3 text-2xl font-semibold`}>
-            Docs{" "}
-            <span className="inline-block transition-transform group-hover:translate-x-1 motion-reduce:transform-none">
-              -&gt;
-            </span>
-          </h2>
-          <p className={`m-0 max-w-[30ch] text-sm opacity-50`}>
-            Find in-depth information about Next.js features and API.
-          </p>
-        </a>
-
-        <a
-          href="https://nextjs.org/learn?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-          className="group rounded-lg border border-transparent px-5 py-4 transition-colors hover:border-gray-300 hover:bg-gray-100 hover:dark:border-neutral-700 hover:dark:bg-neutral-800/30"
-          target="_blank"
-          rel="noopener noreferrer"
-        >
-          <h2 className={`mb-3 text-2xl font-semibold`}>
-            Learn{" "}
-            <span className="inline-block transition-transform group-hover:translate-x-1 motion-reduce:transform-none">
-              -&gt;
-            </span>
-          </h2>
-          <p className={`m-0 max-w-[30ch] text-sm opacity-50`}>
-            Learn about Next.js in an interactive course with&nbsp;quizzes!
-          </p>
-        </a>
-
-        <a
-          href="https://vercel.com/templates?framework=next.js&utm_source=create-next-app&utm_medium=appdir-template&utm_campaign=create-next-app"
-          className="group rounded-lg border border-transparent px-5 py-4 transition-colors hover:border-gray-300 hover:bg-gray-100 hover:dark:border-neutral-700 hover:dark:bg-neutral-800/30"
-          target="_blank"
-          rel="noopener noreferrer"
-        >
-          <h2 className={`mb-3 text-2xl font-semibold`}>
-            Templates{" "}
-            <span className="inline-block transition-transform group-hover:translate-x-1 motion-reduce:transform-none">
-              -&gt;
-            </span>
-          </h2>
-          <p className={`m-0 max-w-[30ch] text-sm opacity-50`}>
-            Explore starter templates for Next.js.
-          </p>
-        </a>
-
-        <a
-          href="https://vercel.com/new?utm_source=create-next-app&utm_medium=appdir-template&utm_campaign=create-next-app"
-          className="group rounded-lg border border-transparent px-5 py-4 transition-colors hover:border-gray-300 hover:bg-gray-100 hover:dark:border-neutral-700 hover:dark:bg-neutral-800/30"
-          target="_blank"
-          rel="noopener noreferrer"
-        >
-          <h2 className={`mb-3 text-2xl font-semibold`}>
-            Deploy{" "}
-            <span className="inline-block transition-transform group-hover:translate-x-1 motion-reduce:transform-none">
-              -&gt;
-            </span>
-          </h2>
-          <p className={`m-0 max-w-[30ch] text-sm opacity-50 text-balance`}>
-            Instantly deploy your Next.js site to a shareable URL with Vercel.
-          </p>
-        </a>
-      </div>
-    </main>
-  );
-}
+export default Page;

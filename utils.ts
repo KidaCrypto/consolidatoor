@@ -7,13 +7,12 @@ import crypto from "crypto";
 import { Connection, GetProgramAccountsFilter, Keypair, PublicKey, SystemProgram, Transaction, clusterApiUrl, sendAndConfirmRawTransaction, sendAndConfirmTransaction } from '@solana/web3.js';
 import dayjs, { OpUnitType } from 'dayjs';
 import _ from 'lodash';
-import { loadOrGenerateKeypair, loadPublicKeysFromFile } from './src/Helpers';
 import { v4 as uuidv4 } from 'uuid'; 
-import { ReadApiAsset } from '@metaplex-foundation/js';
+import { ReadApiAsset, Metaplex, PublicKey as MetaPublicKey, token } from '@metaplex-foundation/js';
+import { transferV1 } from '@metaplex-foundation/mpl-token-metadata';
 import { base58 } from 'ethers/lib/utils';
-import { createTransferCompressedNftInstruction } from './src/NFT/Transfer';
 import { WrapperConnection } from '@/ReadAPI';
-import { createAssociatedTokenAccountInstruction, createTransferInstruction, getAssociatedTokenAddress } from '@solana/spl-token';
+import { TOKEN_2022_PROGRAM_ID, createAssociatedTokenAccountIdempotentInstruction, createAssociatedTokenAccountInstruction, createTransferCheckedWithFeeInstruction, createTransferInstruction, getAssociatedTokenAddress } from '@solana/spl-token';
 
 export function sleep(ms: number) {
     return new Promise((resolve, reject) => {
@@ -144,15 +143,11 @@ export const getDbConfig = () => {
 }
 
 export const getRPCEndpoint = (): string => {
-    return process.env.RPC_URL? process.env.RPC_URL : clusterApiUrl("devnet");
+    return process.env.NEXT_PUBLIC_RPC_URL? process.env.NEXT_PUBLIC_RPC_URL : clusterApiUrl("devnet");
 }
 
 export const getAdminAccount = () => {
     return Keypair.fromSecretKey(base58.decode(process.env.SECRET_KEY!));
-}
-
-export const _getAdminAccount = (): Keypair => {
-    return loadOrGenerateKeypair("Admin");
 }
 
 export //get associated token accounts that stores the SPL tokens
@@ -185,6 +180,32 @@ const getTokenAccounts = async(connection: Connection, address: string) => {
         console.log(`--Token Balance: ${tokenBalance}`);
     }); */
     return accounts;
+  }
+
+  catch {
+    return [];
+  }
+};
+
+export //get associated token accounts that stores the SPL tokens
+const getToken2022Accounts = async(connection: Connection, address: string) => {
+  try {
+    const accounts = await connection.getParsedTokenAccountsByOwner(
+        new PublicKey(address),
+        { programId: TOKEN_2022_PROGRAM_ID }
+    );
+
+    /* accounts.forEach((account, i) => {
+        //Parse the account data
+        const parsedAccountInfo:any = account.account.data;
+        const mintAddress:string = parsedAccountInfo["parsed"]["info"]["mint"];
+        const tokenBalance: number = parsedAccountInfo["parsed"]["info"]["tokenAmount"]["uiAmount"];
+        //Log results
+        console.log(`Token Account No. ${i + 1}: ${account.pubkey.toString()}`);
+        console.log(`--Token Mint: ${mintAddress}`);
+        console.log(`--Token Balance: ${tokenBalance}`);
+    }); */
+    return accounts.value;
   }
 
   catch {
@@ -340,7 +361,9 @@ export const getAddressNftDetails = async(account: string) => {
     // create a new rpc connection, using the ReadApi wrapper
     const connection = new WrapperConnection(CLUSTER_URL, "confirmed");
     const result = await connection.getAssetsByOwner({ ownerAddress: account });
-
+    result.items.forEach(item => {
+        console.log(item);
+    })
     return result.items ?? [];
 }
 
@@ -371,14 +394,14 @@ export const getSendSolTx = async(fromAccount: string, toAccount: string, amount
 }
 
 export const transferCNfts = async(nft_ids: string[], fromAccount: string, to: string) => {
-    let tx = new Transaction();
+    /* let tx = new Transaction();
 
     for(const nft_id of nft_ids) {
         let ix = await createTransferCompressedNftInstruction(new PublicKey(to), new PublicKey(nft_id));
         tx.add(ix);
     }
 
-    return tx;
+    return tx; */
 }
 
 export const getUserTokens = async(userAccount: PublicKey) => {
@@ -392,17 +415,60 @@ export const getUserTokens = async(userAccount: PublicKey) => {
         amount: number;
         decimals: number;
     }} = {};
+
     let userAccounts = await getTokenAccounts(connection, userAccount.toString());
     for(let account of userAccounts) {
-      let anyAccount = account.account as any;
-      let mint: string = anyAccount.data["parsed"]["info"]["mint"];
-      let decimals: number = anyAccount.data["parsed"]["info"]["tokenAmount"]["decimals"];
-      let accountAmount: number = anyAccount.data["parsed"]["info"]["tokenAmount"]["uiAmount"];
+        let anyAccount = account.account as any;
+        let mint: string = anyAccount.data["parsed"]["info"]["mint"];
+        console.log(mint === "F6DeXmCzyzGSPygtMbxWzij4bB7y61MQtNtSMD1JCYo4");
+        let decimals: number = anyAccount.data["parsed"]["info"]["tokenAmount"]["decimals"];
+        let accountAmount: number = anyAccount.data["parsed"]["info"]["tokenAmount"]["uiAmount"];
 
-      mintObject[mint] = {
-        amount: accountAmount,
-        decimals
-      };
+        let isFrozen = anyAccount.data["parsed"]["info"]["state"] === "frozen";
+        // we dont add frozen states
+        if(isFrozen) {
+            continue;
+        }
+
+        mintObject[mint] = {
+            amount: accountAmount,
+            decimals
+        };
+    }
+
+    return mintObject;
+}
+export const getUserToken2022s = async(userAccount: PublicKey) => {
+    // load the env variables and store the cluster RPC url
+    const CLUSTER_URL = getRPCEndpoint();
+
+    // create a new rpc connection, using the ReadApi wrapper
+    const connection = new WrapperConnection(CLUSTER_URL, "confirmed");
+
+    let mintObject: {[mintAddress: string]: {
+        amount: number;
+        decimals: number;
+    }} = {};
+
+    let userAccounts = await getToken2022Accounts(connection, userAccount.toString());
+    console.log(userAccounts);
+    for(let account of userAccounts) {
+        console.log(account);
+        let anyAccount = account.account as any;
+        let mint: string = anyAccount.data["parsed"]["info"]["mint"];
+        let decimals: number = anyAccount.data["parsed"]["info"]["tokenAmount"]["decimals"];
+        let accountAmount: number = anyAccount.data["parsed"]["info"]["tokenAmount"]["uiAmount"];
+        let isFrozen = anyAccount.data["parsed"]["info"]["state"] === "frozen";
+
+        // we dont add frozen states
+        if(isFrozen) {
+            continue;
+        }
+
+        mintObject[mint] = {
+            amount: accountAmount,
+            decimals
+        };
     }
 
     return mintObject;
@@ -441,18 +507,139 @@ const createNewTransferToInstruction = async (fromAccount: string, toAccount: st
 
     return transferTokenInstruction;
 }
+const createNew2022TransferToInstruction = async (fromAccount: string, toAccount: string, mint: string, amount: number, decimals: number, shouldCreateNewATA: boolean)=>{
+    let fromAccountPubkey = new PublicKey(fromAccount);
+    let toAccountPubkey = new PublicKey(toAccount);
+    let mintAccountPubkey = new PublicKey(mint);
+
+    // Set the decimals, fee basis points, and maximum fee
+    const feeBasisPoints = 200; 
+
+    // Define the amount to be minted and the amount to be transferred, accounting for decimals
+    const transferAmount = BigInt(amount * Math.pow(10, decimals));
+
+    // Calculate the fee for the transfer
+    const calcFee = (transferAmount * BigInt(feeBasisPoints)) / BigInt(10_000);
+
+    // console.log(`---STEP 1: Get Associated Address---`);
+    //get associated token account of your wallet
+    console.log('getting ATA');
+    const fromTokenATA = await getAssociatedTokenAddress(mintAccountPubkey, fromAccountPubkey, false, TOKEN_2022_PROGRAM_ID);
+    console.log(fromTokenATA.toBase58());
+    const tokenATA = await getAssociatedTokenAddress(mintAccountPubkey, toAccountPubkey, false, TOKEN_2022_PROGRAM_ID);
+    console.log(tokenATA.toBase58());
+    // let shouldCreateNewATA = !Object.keys(mintObject).includes(mintKeypair.publicKey.toBase58()); 
+
+    const transferTokenInstruction = new Transaction();
+    if(shouldCreateNewATA) {
+        console.log('getting create ATA')
+        transferTokenInstruction.add(
+            createAssociatedTokenAccountIdempotentInstruction(
+              fromAccountPubkey, //Payer 
+              tokenATA, //Associated token account 
+              toAccountPubkey, //token owner
+              mintAccountPubkey, //Mint
+              TOKEN_2022_PROGRAM_ID,
+            ),
+        );
+    }
+    console.log('getting transfer ix')
+    transferTokenInstruction.add(
+        createTransferCheckedWithFeeInstruction(
+            fromTokenATA, //From Token Account
+            mintAccountPubkey,
+            tokenATA, //Destination Token Account
+            fromAccountPubkey, //Owner
+            transferAmount,
+            decimals,
+            calcFee
+        ),
+    );
+
+    return transferTokenInstruction;
+}
+
 
 // account = non public key account
 export const getTokenTransferTxs = async(fromAccount: string, toAccount: string) => {
     const fromMintObject = await getUserTokens(new PublicKey(fromAccount));
     const toMintObject = await getUserTokens(new PublicKey(toAccount));
 
-    let txs: Transaction[] = [];
+    let tx: Transaction = new Transaction();
 
     for(const [mint, { decimals, amount }] of Object.entries(fromMintObject)) {
+        if(amount === 0) {
+            continue;
+        }
         let shouldCreateNewATA = !toMintObject[mint]; // doesn't have the mint address
-        let tx = new Transaction();
         tx.add(await createNewTransferToInstruction(fromAccount, toAccount, mint, amount, decimals, shouldCreateNewATA));
+    }
+
+    return tx;
+}
+
+export const getToken2022TransferTxs = async(fromAccount: string, toAccount: string) => {
+    const fromMintObject = await getUserToken2022s(new PublicKey(fromAccount));
+    const toMintObject = await getUserToken2022s(new PublicKey(toAccount));
+
+    let tx: Transaction = new Transaction();
+
+    for(const [mint, { decimals, amount }] of Object.entries(fromMintObject)) {
+        if(amount === 0) {
+            continue;
+        }
+        
+        let shouldCreateNewATA = !toMintObject[mint]; // doesn't have the mint address
+        tx.add(await createNew2022TransferToInstruction(fromAccount, toAccount, mint, amount, decimals, shouldCreateNewATA));
+    }
+
+    return tx;
+}
+
+export const getAccountNfts = async(owner: string) => {
+    let connection = new Connection(getRPCEndpoint());
+    const metaplex = new Metaplex(connection);
+
+    let nfts = await metaplex.nfts().findAllByOwner({ owner: new PublicKey(owner) });
+    let ret: any = [];
+
+    // must use model = 'nft'
+    for(const nft of nfts) {
+        let nftModel = await metaplex.nfts().findByMint({ mintAddress: (nft as any).mintAddress });
+        ret.push(nftModel);
+    }
+
+    return ret;
+}
+
+export const getAccountNftsObject = async(owner: string) => {
+    let nfts = await getAccountNfts(owner);
+    let mintObject: {[mintAddress: string] : string} = {};
+    nfts.forEach((nft: any) => {
+        mintObject[nft.mint.address.toBase58()] = nft.name;
+    });
+
+    return mintObject;
+}
+
+// account = non public key account
+export const getNftTransferTxs = async(fromAccount: string, toAccount: string) => {
+    let connection = new Connection(getRPCEndpoint());
+    const metaplex = new Metaplex(connection);
+
+    let nfts = await getAccountNfts(fromAccount);
+    let txs: Transaction[] = [];
+    for(const nft of nfts) {
+        let tx = new Transaction();
+        const txBuilder = metaplex.nfts().builders().transfer({
+            nftOrSft: nft,
+            fromOwner: new PublicKey(fromAccount),
+            toOwner: new PublicKey(toAccount),
+            amount: token(1),
+        });
+
+        let ixs = txBuilder.getInstructions();
+        tx.add(...ixs);
         txs.push(tx);
     }
 

@@ -37,3 +37,6 @@ next-env.d.ts
 
 
 *.js
+
+.env
+package-lock.json
