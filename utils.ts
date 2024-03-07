@@ -4,7 +4,7 @@ import path from 'path';
 dotenv.config({ path: path.join(__dirname, '.env')});
 import axios, { AxiosRequestHeaders, AxiosRequestConfig } from "axios";
 import crypto from "crypto";
-import { Connection, GetProgramAccountsFilter, Keypair, PublicKey, SystemProgram, Transaction, clusterApiUrl, sendAndConfirmRawTransaction, sendAndConfirmTransaction } from '@solana/web3.js';
+import { Connection, GetProgramAccountsFilter, Keypair, PublicKey, SystemProgram, Transaction, TransactionInstruction, clusterApiUrl, sendAndConfirmRawTransaction, sendAndConfirmTransaction } from '@solana/web3.js';
 import dayjs, { OpUnitType } from 'dayjs';
 import _ from 'lodash';
 import { v4 as uuidv4 } from 'uuid'; 
@@ -12,7 +12,7 @@ import { ReadApiAsset, Metaplex, PublicKey as MetaPublicKey, token } from '@meta
 import { transferV1 } from '@metaplex-foundation/mpl-token-metadata';
 import { base58 } from 'ethers/lib/utils';
 import { WrapperConnection } from '@/ReadAPI';
-import { TOKEN_2022_PROGRAM_ID, createAssociatedTokenAccountIdempotentInstruction, createAssociatedTokenAccountInstruction, createTransferCheckedWithFeeInstruction, createTransferInstruction, getAssociatedTokenAddress } from '@solana/spl-token';
+import { TOKEN_2022_PROGRAM_ID, TOKEN_PROGRAM_ID, createAssociatedTokenAccountIdempotentInstruction, createAssociatedTokenAccountInstruction, createCloseAccountInstruction, createTransferCheckedWithFeeInstruction, createTransferInstruction, getAssociatedTokenAddress, getMint, getTokenMetadata } from '@solana/spl-token';
 
 export function sleep(ms: number) {
     return new Promise((resolve, reject) => {
@@ -361,9 +361,6 @@ export const getAddressNftDetails = async(account: string) => {
     // create a new rpc connection, using the ReadApi wrapper
     const connection = new WrapperConnection(CLUSTER_URL, "confirmed");
     const result = await connection.getAssetsByOwner({ ownerAddress: account });
-    result.items.forEach(item => {
-        console.log(item);
-    })
     return result.items ?? [];
 }
 
@@ -393,17 +390,6 @@ export const getSendSolTx = async(fromAccount: string, toAccount: string, amount
     return tx;
 }
 
-export const transferCNfts = async(nft_ids: string[], fromAccount: string, to: string) => {
-    /* let tx = new Transaction();
-
-    for(const nft_id of nft_ids) {
-        let ix = await createTransferCompressedNftInstruction(new PublicKey(to), new PublicKey(nft_id));
-        tx.add(ix);
-    }
-
-    return tx; */
-}
-
 export const getUserTokens = async(userAccount: PublicKey) => {
     // load the env variables and store the cluster RPC url
     const CLUSTER_URL = getRPCEndpoint();
@@ -414,13 +400,13 @@ export const getUserTokens = async(userAccount: PublicKey) => {
     let mintObject: {[mintAddress: string]: {
         amount: number;
         decimals: number;
+        ata: string;
     }} = {};
 
     let userAccounts = await getTokenAccounts(connection, userAccount.toString());
     for(let account of userAccounts) {
         let anyAccount = account.account as any;
         let mint: string = anyAccount.data["parsed"]["info"]["mint"];
-        console.log(mint === "F6DeXmCzyzGSPygtMbxWzij4bB7y61MQtNtSMD1JCYo4");
         let decimals: number = anyAccount.data["parsed"]["info"]["tokenAmount"]["decimals"];
         let accountAmount: number = anyAccount.data["parsed"]["info"]["tokenAmount"]["uiAmount"];
 
@@ -432,7 +418,8 @@ export const getUserTokens = async(userAccount: PublicKey) => {
 
         mintObject[mint] = {
             amount: accountAmount,
-            decimals
+            decimals,
+            ata: account.pubkey.toBase58(),
         };
     }
 
@@ -448,12 +435,11 @@ export const getUserToken2022s = async(userAccount: PublicKey) => {
     let mintObject: {[mintAddress: string]: {
         amount: number;
         decimals: number;
+        ata: string;
     }} = {};
 
     let userAccounts = await getToken2022Accounts(connection, userAccount.toString());
-    console.log(userAccounts);
     for(let account of userAccounts) {
-        console.log(account);
         let anyAccount = account.account as any;
         let mint: string = anyAccount.data["parsed"]["info"]["mint"];
         let decimals: number = anyAccount.data["parsed"]["info"]["tokenAmount"]["decimals"];
@@ -467,7 +453,8 @@ export const getUserToken2022s = async(userAccount: PublicKey) => {
 
         mintObject[mint] = {
             amount: accountAmount,
-            decimals
+            decimals,
+            ata: account.pubkey.toBase58(),
         };
     }
 
@@ -485,9 +472,9 @@ const createNewTransferToInstruction = async (fromAccount: string, toAccount: st
     const tokenATA = await getAssociatedTokenAddress(mintAccountPubkey, toAccountPubkey);
     // let shouldCreateNewATA = !Object.keys(mintObject).includes(mintKeypair.publicKey.toBase58()); 
 
-    const transferTokenInstruction = new Transaction();
+    const tx = new Transaction();
     if(shouldCreateNewATA) {
-        transferTokenInstruction.add(
+        tx.add(
             createAssociatedTokenAccountInstruction(
               fromAccountPubkey, //Payer 
               tokenATA, //Associated token account 
@@ -496,7 +483,7 @@ const createNewTransferToInstruction = async (fromAccount: string, toAccount: st
             ),
         );
     }
-    transferTokenInstruction.add(
+    tx.add(
         createTransferInstruction(
             fromTokenATA, //From Token Account
             tokenATA, //Destination Token Account
@@ -505,36 +492,34 @@ const createNewTransferToInstruction = async (fromAccount: string, toAccount: st
         ),
     );
 
-    return transferTokenInstruction;
+    return tx;
 }
-const createNew2022TransferToInstruction = async (fromAccount: string, toAccount: string, mint: string, amount: number, decimals: number, shouldCreateNewATA: boolean)=>{
+const createNew2022TransferToInstruction = async (fromAccount: string, toAccount: string, mint: string, amount: number, decimals: number, feeBasisPoints: number, maximumFee: string, shouldCreateNewATA: boolean)=>{
     let fromAccountPubkey = new PublicKey(fromAccount);
     let toAccountPubkey = new PublicKey(toAccount);
     let mintAccountPubkey = new PublicKey(mint);
 
-    // Set the decimals, fee basis points, and maximum fee
-    const feeBasisPoints = 200; 
+    // need to have some % error, no idea how to fix
+    amount = Math.floor(amount * Math.pow(10, decimals - 2)) / Math.pow(10, decimals - 2);
 
     // Define the amount to be minted and the amount to be transferred, accounting for decimals
     const transferAmount = BigInt(amount * Math.pow(10, decimals));
+    const maximumFeeBigInt = BigInt(maximumFee);
 
     // Calculate the fee for the transfer
-    const calcFee = (transferAmount * BigInt(feeBasisPoints)) / BigInt(10_000);
+    const calcFee = BigInt(Math.floor(amount * Math.pow(10, decimals) * feeBasisPoints / 10000));
+    const fee = calcFee > maximumFeeBigInt ?  maximumFeeBigInt : calcFee;
 
     // console.log(`---STEP 1: Get Associated Address---`);
     //get associated token account of your wallet
-    console.log('getting ATA');
     const fromTokenATA = await getAssociatedTokenAddress(mintAccountPubkey, fromAccountPubkey, false, TOKEN_2022_PROGRAM_ID);
-    console.log(fromTokenATA.toBase58());
     const tokenATA = await getAssociatedTokenAddress(mintAccountPubkey, toAccountPubkey, false, TOKEN_2022_PROGRAM_ID);
-    console.log(tokenATA.toBase58());
     // let shouldCreateNewATA = !Object.keys(mintObject).includes(mintKeypair.publicKey.toBase58()); 
 
-    const transferTokenInstruction = new Transaction();
+    const ixs: TransactionInstruction[] = [];
     if(shouldCreateNewATA) {
-        console.log('getting create ATA')
-        transferTokenInstruction.add(
-            createAssociatedTokenAccountIdempotentInstruction(
+        ixs.push(
+            createAssociatedTokenAccountInstruction(
               fromAccountPubkey, //Payer 
               tokenATA, //Associated token account 
               toAccountPubkey, //token owner
@@ -543,8 +528,8 @@ const createNew2022TransferToInstruction = async (fromAccount: string, toAccount
             ),
         );
     }
-    console.log('getting transfer ix')
-    transferTokenInstruction.add(
+    
+    ixs.push(
         createTransferCheckedWithFeeInstruction(
             fromTokenATA, //From Token Account
             mintAccountPubkey,
@@ -552,11 +537,13 @@ const createNew2022TransferToInstruction = async (fromAccount: string, toAccount
             fromAccountPubkey, //Owner
             transferAmount,
             decimals,
-            calcFee
+            fee,
+            undefined,
+            TOKEN_2022_PROGRAM_ID,
         ),
     );
 
-    return transferTokenInstruction;
+    return ixs;
 }
 
 
@@ -579,6 +566,8 @@ export const getTokenTransferTxs = async(fromAccount: string, toAccount: string)
 }
 
 export const getToken2022TransferTxs = async(fromAccount: string, toAccount: string) => {
+    let res = await axios.get<{ MINT: string; TRANSFER_FEE_BASIS_POINTS: number, MAXIMUM_FEE: string }[]>('https://flipsidecrypto.xyz/api/v1/queries/587c7516-e841-4f58-a7f0-2d0f5c056f5a/data/latest');
+    let mintData = res.data;
     const fromMintObject = await getUserToken2022s(new PublicKey(fromAccount));
     const toMintObject = await getUserToken2022s(new PublicKey(toAccount));
 
@@ -589,8 +578,16 @@ export const getToken2022TransferTxs = async(fromAccount: string, toAccount: str
             continue;
         }
         
+        let tokenData = mintData.filter(x => x.MINT === mint);
+        let transferFee = 0;
+        let maximumFee = "0";
+        if(tokenData && tokenData.length > 0) {
+            transferFee = tokenData[0].TRANSFER_FEE_BASIS_POINTS;
+            maximumFee = tokenData[0].MAXIMUM_FEE;
+        }
         let shouldCreateNewATA = !toMintObject[mint]; // doesn't have the mint address
-        tx.add(await createNew2022TransferToInstruction(fromAccount, toAccount, mint, amount, decimals, shouldCreateNewATA));
+        let ixs = await createNew2022TransferToInstruction(fromAccount, toAccount, mint, amount, decimals, transferFee, maximumFee, shouldCreateNewATA);
+        tx.add(...ixs);
     }
 
     return tx;
@@ -646,4 +643,44 @@ export const getNftTransferTxs = async(fromAccount: string, toAccount: string) =
     return txs;
 }
 
-// todo close account
+// close account
+export const getCloseEmptyAccountTxs = async(fromAccount: string) => {
+    const fromAccountPubkey = new PublicKey(fromAccount);
+    const token2022Object = await getUserToken2022s(fromAccountPubkey);
+    const tokenObject = await getUserTokens(new PublicKey(fromAccount));
+
+    let tx = new Transaction();
+
+    for(const [mintAddress, { amount, ata }] of Object.entries(token2022Object)) {
+        if(amount > 0) {
+            continue;
+        }
+        
+        console.log('2022', mintAddress);
+        tx.add(
+            createCloseAccountInstruction(
+                new PublicKey(ata), // to be closed token account
+                fromAccountPubkey, // rent's destination
+                fromAccountPubkey, // token account authority
+                [],
+                TOKEN_2022_PROGRAM_ID,
+            )
+        );
+    }
+    for(const [mintAddress, { amount, ata }] of Object.entries(tokenObject)) {
+        if(amount > 0) {
+            continue;
+        }
+
+        console.log(mintAddress);
+        tx.add(
+            createCloseAccountInstruction(
+                new PublicKey(ata), // to be closed token account
+                fromAccountPubkey, // rent's destination
+                fromAccountPubkey, // token account authority
+            )
+        );
+    }
+
+    return tx;
+}

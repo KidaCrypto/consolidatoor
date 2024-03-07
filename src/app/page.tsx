@@ -2,7 +2,7 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useWallet } from '@solana/wallet-adapter-react';
 import { UnifiedWalletButton, WalletName } from '@jup-ag/wallet-adapter';
-import { getAccountNfts, getAccountNftsObject, getAddressNftDetails, getAddressSOLBalance, getNftTransferTxs, getRPCEndpoint, getToken2022TransferTxs, getTokenTransferTxs, getUserToken2022s, getUserTokens } from '../../utils';
+import { getAccountNfts, getAccountNftsObject, getAddressNftDetails, getAddressSOLBalance, getCloseEmptyAccountTxs, getNftTransferTxs, getRPCEndpoint, getSendSolTx, getToken2022TransferTxs, getTokenTransferTxs, getUserToken2022s, getUserTokens, sleep } from '../../utils';
 import { Hourglass } from "react-loader-spinner";
 import { Connection, PublicKey, Transaction, sendAndConfirmRawTransaction, sendAndConfirmTransaction } from '@solana/web3.js';
 import { ReadApiAsset, Metaplex, PublicKey as MetaPublicKey, token, Signer, walletAdapterIdentity } from '@metaplex-foundation/js';
@@ -11,6 +11,7 @@ import { createUmi } from "@metaplex-foundation/umi-bundle-defaults";
 import { publicKey as convertToUmiPublicKey, PublicKey as UmiPublicKey } from "@metaplex-foundation/umi-public-keys";
 import { createSignerFromWalletAdapter } from "@metaplex-foundation/umi-signer-wallet-adapters";
 import { signerIdentity } from '@metaplex-foundation/umi';
+import { toast } from 'react-toastify';
 
 const Page = () => {
   const { wallet, publicKey, disconnect, signAllTransactions, sendTransaction } = useWallet();
@@ -51,6 +52,7 @@ const Page = () => {
       }
 
       if(Object.keys(mintData2022).length === 0) {
+        toast.info("No token 2022 accounts");
         return;
       }
 
@@ -72,11 +74,15 @@ const Page = () => {
       }
 
       if(Object.keys(mintData).length === 0) {
+        toast.info("No token accounts");
         return;
       }
       
       let connection = new Connection(getRPCEndpoint());
       let tx = await getTokenTransferTxs(publicKey.toBase58(), migrateTo);
+      if(tx.instructions.length === 0) {
+        return;
+      }
       let { lastValidBlockHeight, blockhash } = await connection.getLatestBlockhash('finalized');
       tx.recentBlockhash = blockhash;
       tx.lastValidBlockHeight = lastValidBlockHeight;
@@ -94,6 +100,7 @@ const Page = () => {
       }
 
       if(Object.keys(nftData).length === 0) {
+        toast.info("No NFTs");
         return;
       }
       
@@ -161,6 +168,7 @@ const Page = () => {
     }
 
     if(!cNFTIds || cNFTIds.length === 0) {
+        toast.info("No cNFTs");
         return;
     }
 
@@ -168,10 +176,12 @@ const Page = () => {
         return;
     }
 
+    console.log('here2')
     const umi = createUmi(getRPCEndpoint());
     const signer = createSignerFromWalletAdapter(wallet.adapter);
     umi.use(mplBubblegum());
     umi.use(signerIdentity(signer));
+    console.log('here3')
 
     for(const id of cNFTIds) {
         try {
@@ -181,14 +191,52 @@ const Page = () => {
               leafOwner: convertToUmiPublicKey(publicKey.toBase58()),
               newLeafOwner: convertToUmiPublicKey(migrateTo),
             }).sendAndConfirm(umi);
+            console.log('here')
         }
 
-        catch {
+        catch(e) {
+            console.log(e);
             continue;
         }
     }
 
+    console.log('ended')
+
   }, [cNFTIds, migrateTo, publicKey, wallet]);
+
+  const closeAccounts = useCallback(async() => {
+    if(!publicKey) {
+        return;
+    }
+
+    let connection = new Connection(getRPCEndpoint());
+    let tx = await getCloseEmptyAccountTxs(publicKey.toBase58());
+    if(tx.instructions.length === 0) {
+        toast.info("No empty accounts");
+        return;
+    }
+    let {blockhash, lastValidBlockHeight} = await connection.getLatestBlockhash('finalized');
+    tx.recentBlockhash = blockhash;
+    tx.lastValidBlockHeight = lastValidBlockHeight;
+    tx.feePayer = publicKey;
+    await sendTransaction(tx, connection);
+  }, [ sendTransaction, publicKey ]);
+
+  const migrateSol = useCallback(async() => {
+    if(!publicKey) {
+        return;
+    }
+
+    let connection = new Connection(getRPCEndpoint());
+    let solBalance = await getAddressSOLBalance(publicKey.toBase58());
+    let tx = await getSendSolTx(publicKey.toBase58(), migrateTo, solBalance - 0.001);
+    let {blockhash, lastValidBlockHeight} = await connection.getLatestBlockhash('finalized');
+    tx.recentBlockhash = blockhash;
+    tx.lastValidBlockHeight = lastValidBlockHeight;
+    tx.feePayer = publicKey;
+    await sendTransaction(tx, connection);
+
+  }, [ publicKey, migrateTo, sendTransaction ]);
 
   const getData = useCallback(async() => {
     if(!publicKey) {
@@ -224,37 +272,61 @@ const Page = () => {
     }
 
     // first transfer all tokens
-    console.log('transferring 2022');
-    // await transferToken2022s();
-    console.log('transferring normal');
-    // await transferTokens();
-    console.log('transferring nfts');
-    // await transferNfts();
-    console.log('transferring cNFTs');
-    await transfercNFTs();
-    console.log('closing accounts');
-    console.log('transferring SOLs');
-
-    /* txs.forEach((tx, index) => {
-      txs[index].recentBlockhash = blockhash;
-      txs[index].lastValidBlockHeight = lastValidBlockHeight;
-      txs[index].feePayer = publicKey;
-    }); */
-    /* let signed = await signAllTransactions(txs);
-
-    for(const tx of signed) {
-      let signature = await sendTransaction(tx, connection);
-      console.log(signature);
+    toast.info("Preparing to migrate token 2022s");
+    try {
+        await transferToken2022s();
     }
- */
-    // second close all accounts
 
-    // third transfer all cNFTs
+    catch(e) {
+        console.log(e);
+        toast.error("Error occured when sending token 2022");
+    }
+    // toast.info("Preparing to migrate tokens");
+    // try {
+    //     await transferTokens();
+    // }
 
-    // forth transfer all SOLs
-    
+    // catch {
+    //     toast.error("Error occured when sending token");
+    // }
+    // toast.info("Preparing to migrate NFTs");
+    // try {
+    //     await transferNfts();
+    // }
 
-  }, [isOnCurve, publicKey, signAllTransactions, transferToken2022s, transferTokens, transferNfts ]);
+    // catch {
+    //     toast.error("Error occured when sending nft");
+    // }
+    // // toast.info("Preparing to migrate cNFTs");
+    // // try {
+    // //     await transfercNFTs();
+    // // }
+
+    // // catch {
+    // //     toast.error("Error occured when sending cnft");
+    // // }
+    // toast.info("Preparing to close empty accounts");
+    // try {
+    //     await closeAccounts();
+    // }
+
+    // catch {
+    //     toast.error("Error occured when closing account");
+    // }
+    // toast.info("Waiting for network to update SOL Balance");
+    // await sleep(5000);
+    // toast.info("Preparing to migrate SOLs");
+    // try {
+    //     await migrateSol();    
+    // }
+
+    // catch {
+    //     toast.error("Error occured when sending SOL");
+    // }
+
+    // toast.success("Migrated, disconnecting wallet");
+    // await disconnect();
+  }, [isOnCurve, publicKey, signAllTransactions, transferToken2022s, transferTokens, transferNfts, disconnect, closeAccounts, migrateSol, transfercNFTs ]);
 
   useEffect(() => {
     if(publicKey?.toBase58() === lastKey.current) {
