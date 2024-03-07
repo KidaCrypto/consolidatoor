@@ -502,6 +502,10 @@ const createNew2022TransferToInstruction = async (fromAccount: string, toAccount
     // need to have some % error, no idea how to fix
     amount = Math.floor(amount * Math.pow(10, decimals - 2)) / Math.pow(10, decimals - 2);
 
+    if(amount === 0) {
+        return;
+    }
+
     // Define the amount to be minted and the amount to be transferred, accounting for decimals
     const transferAmount = BigInt(amount * Math.pow(10, decimals));
     const maximumFeeBigInt = BigInt(maximumFee);
@@ -528,7 +532,7 @@ const createNew2022TransferToInstruction = async (fromAccount: string, toAccount
             ),
         );
     }
-    
+
     ixs.push(
         createTransferCheckedWithFeeInstruction(
             fromTokenATA, //From Token Account
@@ -587,6 +591,9 @@ export const getToken2022TransferTxs = async(fromAccount: string, toAccount: str
         }
         let shouldCreateNewATA = !toMintObject[mint]; // doesn't have the mint address
         let ixs = await createNew2022TransferToInstruction(fromAccount, toAccount, mint, amount, decimals, transferFee, maximumFee, shouldCreateNewATA);
+        if(!ixs) {
+            continue;
+        }
         tx.add(...ixs);
     }
 

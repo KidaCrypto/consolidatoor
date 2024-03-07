@@ -16,6 +16,15 @@ import { toast } from 'react-toastify';
 const Page = () => {
   const { wallet, publicKey, disconnect, signAllTransactions, sendTransaction } = useWallet();
   const [isLoading, setIsLoading] = useState(false);
+
+  //checkboxes
+  const [shouldMigrateToken, setShouldMigrateToken] = useState(true);
+  const [shouldMigrateToken2022, setShouldMigrateToken2022] = useState(true);
+  const [shouldMigrateNFT, setShouldMigrateNFT] = useState(true);
+  const [shouldMigrateCNFT, setShouldMigrateCNFT] = useState(true);
+  const [shouldCloseEmptyAccounts, setShouldCloseEmptyAccounts] = useState(true);
+  const [shouldMigrateSOL, setShouldMigrateSOL] = useState(true);
+
   const [migrateTo, setMigrateTo] = useState("");
   const [mintData, setMintData] = useState<{
     [mintAddress: string]: {
@@ -46,7 +55,19 @@ const Page = () => {
     }
   }, [migrateTo]);
 
+  const reset = useCallback(async() => {
+    // reset
+    setcNFTIds([]);
+    setMintData({});
+    setMintData2022({});
+    setNftData({});
+    await disconnect();
+  }, [disconnect]);
+
   const transferToken2022s = useCallback(async() => {
+      if(!shouldMigrateToken2022) {
+        return;
+      }
       if(!publicKey) {
         return;
       }
@@ -56,19 +77,31 @@ const Page = () => {
         return;
       }
 
-      let connection = new Connection(getRPCEndpoint());
-      let tx = await getToken2022TransferTxs(publicKey.toBase58(), migrateTo);
-      if(tx.instructions.length === 0) {
-        return;
+      toast.info("Preparing to migrate token 2022s");
+      try {
+        let connection = new Connection(getRPCEndpoint());
+        let tx = await getToken2022TransferTxs(publicKey.toBase58(), migrateTo);
+        if(tx.instructions.length === 0) {
+          return;
+        }
+        let { lastValidBlockHeight, blockhash } = await connection.getLatestBlockhash('finalized');
+        tx.recentBlockhash = blockhash;
+        tx.lastValidBlockHeight = lastValidBlockHeight;
+        tx.feePayer = publicKey;
+        await sendTransaction(tx, connection);
       }
-      let { lastValidBlockHeight, blockhash } = await connection.getLatestBlockhash('finalized');
-      tx.recentBlockhash = blockhash;
-      tx.lastValidBlockHeight = lastValidBlockHeight;
-      tx.feePayer = publicKey;
-      await sendTransaction(tx, connection);
-  }, [ publicKey, sendTransaction, migrateTo, mintData2022 ]);
+
+      catch(e) {
+        console.log(e);
+        toast.error("Error occured when sending token 2022");
+      }
+  }, [ publicKey, sendTransaction, migrateTo, mintData2022, shouldMigrateToken2022 ]);
 
   const transferTokens = useCallback(async() => {
+      if(!shouldMigrateToken) {
+        return;
+      }
+
       if(!publicKey) {
         return;
       }
@@ -78,19 +111,30 @@ const Page = () => {
         return;
       }
       
-      let connection = new Connection(getRPCEndpoint());
-      let tx = await getTokenTransferTxs(publicKey.toBase58(), migrateTo);
-      if(tx.instructions.length === 0) {
-        return;
+      toast.info("Preparing to migrate tokens");
+      try {
+        let connection = new Connection(getRPCEndpoint());
+        let tx = await getTokenTransferTxs(publicKey.toBase58(), migrateTo);
+        if(tx.instructions.length === 0) {
+          return;
+        }
+        let { lastValidBlockHeight, blockhash } = await connection.getLatestBlockhash('finalized');
+        tx.recentBlockhash = blockhash;
+        tx.lastValidBlockHeight = lastValidBlockHeight;
+        tx.feePayer = publicKey;
+        await sendTransaction(tx, connection);
       }
-      let { lastValidBlockHeight, blockhash } = await connection.getLatestBlockhash('finalized');
-      tx.recentBlockhash = blockhash;
-      tx.lastValidBlockHeight = lastValidBlockHeight;
-      tx.feePayer = publicKey;
-      await sendTransaction(tx, connection);
-  }, [ publicKey, sendTransaction, migrateTo, mintData ]);
+
+      catch {
+        toast.error("Error occured when sending token");
+      }
+  }, [ publicKey, sendTransaction, migrateTo, mintData, shouldMigrateToken ]);
 
   const transferNfts = useCallback(async() => {
+      if(!shouldMigrateNFT) {
+        return;
+      }
+
       if(!publicKey) {
         return;
       }
@@ -104,65 +148,75 @@ const Page = () => {
         return;
       }
       
-      let nfts = await getAccountNfts(publicKey.toBase58());
-      let txs: Transaction[] = [];
-      let connection = new Connection(getRPCEndpoint());
-      const metaplex = new Metaplex(connection);
-      metaplex.use(walletAdapterIdentity({
-          publicKey,
-          signTransaction: async (tx) => tx,
-      }));    
-
-      const feePayer: Signer = {
-          publicKey,
-          signTransaction: async (tx) => tx,
-          signMessage: async (msg) => msg,
-          signAllTransactions: async (txs) => txs,
-      };
-
-      let tx = new Transaction();
-
-      let count = 0;
-      for(const nft of nfts) {
-
-          count++;  
-          const txBuilder = metaplex.nfts().builders().transfer({
-              nftOrSft: nft,
-              fromOwner: publicKey,
-              toOwner: new PublicKey(migrateTo),
-              amount: token(1),
-              authority: feePayer,
-          });
-
-          let ixs = txBuilder.getInstructions();
-          tx.add(...ixs);
-
-          // txs cant get too large
-          if(count == 3) {
-            count = 0;
-            let {blockhash, lastValidBlockHeight} = await connection.getLatestBlockhash('finalized');
-            tx.recentBlockhash = blockhash;
-            tx.lastValidBlockHeight = lastValidBlockHeight;
-            tx.feePayer = publicKey;
-            try {
-              await sendTransaction(tx, connection);
+      toast.info("Preparing to migrate NFTs");
+      try {
+        let nfts = await getAccountNfts(publicKey.toBase58());
+        let txs: Transaction[] = [];
+        let connection = new Connection(getRPCEndpoint());
+        const metaplex = new Metaplex(connection);
+        metaplex.use(walletAdapterIdentity({
+            publicKey,
+            signTransaction: async (tx) => tx,
+        }));    
+  
+        const feePayer: Signer = {
+            publicKey,
+            signTransaction: async (tx) => tx,
+            signMessage: async (msg) => msg,
+            signAllTransactions: async (txs) => txs,
+        };
+  
+        let tx = new Transaction();
+  
+        let count = 0;
+        for(const nft of nfts) {
+  
+            count++;  
+            const txBuilder = metaplex.nfts().builders().transfer({
+                nftOrSft: nft,
+                fromOwner: publicKey,
+                toOwner: new PublicKey(migrateTo),
+                amount: token(1),
+                authority: feePayer,
+            });
+  
+            let ixs = txBuilder.getInstructions();
+            tx.add(...ixs);
+  
+            // txs cant get too large
+            if(count == 2) {
+              count = 0;
+              let {blockhash, lastValidBlockHeight} = await connection.getLatestBlockhash('finalized');
+              tx.recentBlockhash = blockhash;
+              tx.lastValidBlockHeight = lastValidBlockHeight;
+              tx.feePayer = publicKey;
+              try {
+                await sendTransaction(tx, connection);
+              }
+  
+              catch(e) {
+                console.log(e);
+              }
+              tx = new Transaction();
+              continue;
             }
-
-            catch(e) {
-              console.log(e);
-            }
-            tx = new Transaction();
-            continue;
-          }
+        }
+        let {blockhash, lastValidBlockHeight} = await connection.getLatestBlockhash('finalized');
+        tx.recentBlockhash = blockhash;
+        tx.lastValidBlockHeight = lastValidBlockHeight;
+        tx.feePayer = publicKey;
+        await sendTransaction(tx, connection);
       }
-      let {blockhash, lastValidBlockHeight} = await connection.getLatestBlockhash('finalized');
-      tx.recentBlockhash = blockhash;
-      tx.lastValidBlockHeight = lastValidBlockHeight;
-      tx.feePayer = publicKey;
-      await sendTransaction(tx, connection);
-  }, [ publicKey, sendTransaction, migrateTo, nftData, signAllTransactions ]);
+
+      catch {
+        toast.error("Error occured when sending nft");
+      }
+  }, [ publicKey, sendTransaction, migrateTo, nftData, signAllTransactions, shouldMigrateNFT ]);
 
   const transfercNFTs = useCallback(async() => {
+    if(!shouldMigrateCNFT) {
+      return;
+    }
     if(!publicKey) {
         return;
     }
@@ -176,35 +230,43 @@ const Page = () => {
         return;
     }
 
-    console.log('here2')
-    const umi = createUmi(getRPCEndpoint());
-    const signer = createSignerFromWalletAdapter(wallet.adapter);
-    umi.use(mplBubblegum());
-    umi.use(signerIdentity(signer));
-    console.log('here3')
-
-    for(const id of cNFTIds) {
-        try {
-            const assetWithProof = await getAssetWithProof(umi, convertToUmiPublicKey(id));
-            await transfer(umi, {
-              ...assetWithProof,
-              leafOwner: convertToUmiPublicKey(publicKey.toBase58()),
-              newLeafOwner: convertToUmiPublicKey(migrateTo),
-            }).sendAndConfirm(umi);
-            console.log('here')
-        }
-
-        catch(e) {
-            console.log(e);
-            continue;
+    toast.info("Preparing to migrate cNFTs");
+    try {
+        const umi = createUmi(getRPCEndpoint());
+        const signer = createSignerFromWalletAdapter(wallet.adapter);
+        umi.use(mplBubblegum());
+        umi.use(signerIdentity(signer));
+    
+        for(const id of cNFTIds) {
+            try {
+              toast.info(`Preparing tx for ${id}`);
+                const assetWithProof = await getAssetWithProof(umi, convertToUmiPublicKey(id));
+                transfer(umi, {
+                  ...assetWithProof,
+                  leafOwner: convertToUmiPublicKey(publicKey.toBase58()),
+                  newLeafOwner: convertToUmiPublicKey(migrateTo),
+                }).sendAndConfirm(umi);
+                // throttle
+                await sleep(1000);
+            }
+    
+            catch(e) {
+                console.log(e);
+                continue;
+            }
         }
     }
 
-    console.log('ended')
+    catch {
+        toast.error("Error occured when sending cnft");
+    }
 
-  }, [cNFTIds, migrateTo, publicKey, wallet]);
+  }, [cNFTIds, migrateTo, publicKey, wallet, shouldMigrateCNFT]);
 
   const closeAccounts = useCallback(async() => {
+    if(!shouldCloseEmptyAccounts) {
+      return;
+    }
     if(!publicKey) {
         return;
     }
@@ -215,28 +277,51 @@ const Page = () => {
         toast.info("No empty accounts");
         return;
     }
-    let {blockhash, lastValidBlockHeight} = await connection.getLatestBlockhash('finalized');
-    tx.recentBlockhash = blockhash;
-    tx.lastValidBlockHeight = lastValidBlockHeight;
-    tx.feePayer = publicKey;
-    await sendTransaction(tx, connection);
-  }, [ sendTransaction, publicKey ]);
+    
+    toast.info("Waiting for network to update token accounts");
+    await sleep(5000);
+
+    toast.info("Preparing to close empty accounts");
+    try {
+        let {blockhash, lastValidBlockHeight} = await connection.getLatestBlockhash('finalized');
+        tx.recentBlockhash = blockhash;
+        tx.lastValidBlockHeight = lastValidBlockHeight;
+        tx.feePayer = publicKey;
+        await sendTransaction(tx, connection);
+        toast.info("Waiting for network to update SOL Balance");
+        await sleep(5000);
+    }
+
+    catch {
+        toast.error("Error occured when closing account");
+    }
+  }, [ sendTransaction, publicKey, shouldCloseEmptyAccounts ]);
 
   const migrateSol = useCallback(async() => {
+    if(!shouldMigrateSOL) {
+      return;
+    }
     if(!publicKey) {
         return;
     }
 
-    let connection = new Connection(getRPCEndpoint());
-    let solBalance = await getAddressSOLBalance(publicKey.toBase58());
-    let tx = await getSendSolTx(publicKey.toBase58(), migrateTo, solBalance - 0.001);
-    let {blockhash, lastValidBlockHeight} = await connection.getLatestBlockhash('finalized');
-    tx.recentBlockhash = blockhash;
-    tx.lastValidBlockHeight = lastValidBlockHeight;
-    tx.feePayer = publicKey;
-    await sendTransaction(tx, connection);
+    toast.info("Preparing to migrate SOLs");
+    try {
+        let connection = new Connection(getRPCEndpoint());
+        let solBalance = await getAddressSOLBalance(publicKey.toBase58());
+        let tx = await getSendSolTx(publicKey.toBase58(), migrateTo, solBalance - 0.001);
+        let {blockhash, lastValidBlockHeight} = await connection.getLatestBlockhash('finalized');
+        tx.recentBlockhash = blockhash;
+        tx.lastValidBlockHeight = lastValidBlockHeight;
+        tx.feePayer = publicKey;
+        await sendTransaction(tx, connection);
+    }
 
-  }, [ publicKey, migrateTo, sendTransaction ]);
+    catch {
+        toast.error("Error occured when sending SOL");
+    }
+
+  }, [ publicKey, migrateTo, sendTransaction, shouldMigrateSOL ]);
 
   const getData = useCallback(async() => {
     if(!publicKey) {
@@ -271,62 +356,16 @@ const Page = () => {
       return;
     }
 
-    // first transfer all tokens
-    toast.info("Preparing to migrate token 2022s");
-    try {
-        await transferToken2022s();
-    }
+    await transferToken2022s();
+    await transferTokens();
+    await transferNfts();
+    await transfercNFTs();
+    await closeAccounts();
+    await migrateSol(); 
+    toast.success("Migration complete, disconnecting wallet");
+    await reset();
 
-    catch(e) {
-        console.log(e);
-        toast.error("Error occured when sending token 2022");
-    }
-    // toast.info("Preparing to migrate tokens");
-    // try {
-    //     await transferTokens();
-    // }
-
-    // catch {
-    //     toast.error("Error occured when sending token");
-    // }
-    // toast.info("Preparing to migrate NFTs");
-    // try {
-    //     await transferNfts();
-    // }
-
-    // catch {
-    //     toast.error("Error occured when sending nft");
-    // }
-    // // toast.info("Preparing to migrate cNFTs");
-    // // try {
-    // //     await transfercNFTs();
-    // // }
-
-    // // catch {
-    // //     toast.error("Error occured when sending cnft");
-    // // }
-    // toast.info("Preparing to close empty accounts");
-    // try {
-    //     await closeAccounts();
-    // }
-
-    // catch {
-    //     toast.error("Error occured when closing account");
-    // }
-    // toast.info("Waiting for network to update SOL Balance");
-    // await sleep(5000);
-    // toast.info("Preparing to migrate SOLs");
-    // try {
-    //     await migrateSol();    
-    // }
-
-    // catch {
-    //     toast.error("Error occured when sending SOL");
-    // }
-
-    // toast.success("Migrated, disconnecting wallet");
-    // await disconnect();
-  }, [isOnCurve, publicKey, signAllTransactions, transferToken2022s, transferTokens, transferNfts, disconnect, closeAccounts, migrateSol, transfercNFTs ]);
+  }, [isOnCurve, publicKey, signAllTransactions, transferToken2022s, transferTokens, transferNfts, closeAccounts, migrateSol, transfercNFTs, reset ]);
 
   useEffect(() => {
     if(publicKey?.toBase58() === lastKey.current) {
@@ -340,6 +379,14 @@ const Page = () => {
 	return (
 		<div className="min-h-[100vh] w-100 flex items-center justify-center flex-1">
       <div className="flex-1 flex flex-col justify-center items-center">
+            {
+                publicKey &&
+                <>
+                <span>Current Address</span>
+                <div  className='mb-5'>{publicKey?.toBase58()} <button className='rounded bg-red-600 px-3 py-2 w-[10vw]' onClick={() => reset()}>Disconnect</button> </div>
+                </>
+            }
+            <span>Migrate To Address</span>
           <input 
             className={`text-black p-1 w-[50vw] outline-none ${isOnCurve? '' : 'border-red-500 border-2 text-red-500'}`}
             type="text" 
@@ -363,8 +410,6 @@ const Page = () => {
           {
             publicKey &&
             <>
-            <span className='mb-5'>Current Address: {publicKey?.toBase58()}</span>
-
             {
               isLoading &&
               <Hourglass
@@ -382,9 +427,23 @@ const Page = () => {
               !isLoading &&
               mintData &&
               <div className='items-center justify-center flex flex-col'>
-                <div className='flex flex-row space-x-3 items-center mb-3'>
+                <div className='flex flex-col space-y-3 items-center mb-3'>
                   <span className='text-xl font-bold text-center'>Found {solBalance} SOL, {Object.keys(mintData).length} Token(s), {Object.keys(mintData2022).length} Token 2022(s), {Object.keys(nftData).length} NFT(s), and {cNFTIds.length} cNFTs</span>
-                  <button className='rounded bg-green-600 px-3 py-2' onClick={migrate}>Migrate</button>
+                  <button className='rounded bg-green-600 px-3 py-2 w-[30vw]' onClick={migrate}>Migrate</button>
+                  <div className='flex flex-row'>
+                    <span>Tokens</span>
+                    <input className='ml-1' type="checkbox" defaultChecked={shouldMigrateToken} onClick={() => setShouldMigrateToken(!shouldMigrateToken)}/>
+                    <span className='ml-3'>Token2022</span>
+                    <input className='ml-1' type="checkbox" defaultChecked={shouldMigrateToken2022} onClick={() => setShouldMigrateToken2022(!shouldMigrateToken2022)}/>
+                    <span className='ml-3'>NFTs</span>
+                    <input className='ml-1' type="checkbox" defaultChecked={shouldMigrateNFT} onClick={() => setShouldMigrateNFT(!shouldMigrateNFT)}/>
+                    <span className='ml-3'>cNFTs</span>
+                    <input className='ml-1' type="checkbox" defaultChecked={shouldMigrateCNFT} onClick={() => setShouldMigrateCNFT(!shouldMigrateCNFT)}/>
+                    <span className='ml-3'>Close Empty Accounts</span>
+                    <input className='ml-1' type="checkbox" defaultChecked={shouldCloseEmptyAccounts} onClick={() => setShouldCloseEmptyAccounts(!shouldCloseEmptyAccounts)}/>
+                    <span className='ml-3'>SOLs</span>
+                    <input className='ml-1' type="checkbox" defaultChecked={shouldMigrateSOL} onClick={() => setShouldMigrateSOL(!shouldMigrateSOL)}/>
+                  </div>
                 </div>
 
                 {
