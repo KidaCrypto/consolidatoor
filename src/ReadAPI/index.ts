@@ -2,7 +2,6 @@ import { Commitment, Connection, ConnectionConfig, PublicKey } from "@solana/web
 import BN from "bn.js";
 
 import { TokenStandard } from "@metaplex-foundation/mpl-token-metadata";
-import { PROGRAM_ID as BUBBLEGUM_PROGRAM_ID } from "@metaplex-foundation/mpl-bubblegum";
 
 // import from the `@metaplex-foundation/js`
 import { MetaplexError, toBigNumber, Pda, amount } from "@metaplex-foundation/js";
@@ -70,60 +69,6 @@ export const toMintFromReadApiAsset = (input: ReadApiAsset): Mint => {
     supply: amount(1, currency),
     isWrappedSol: false,
     currency,
-  };
-};
-
-/**
- * Convert a ReadApi asset's data into standard Metaplex `Metadata`
- */
-export const toMetadataFromReadApiAsset = (input: ReadApiAsset): Metadata => {
-  const updateAuthority = input.authorities?.find(authority => authority.scopes.includes("full"));
-
-  const collection = input.grouping.find(({ group_key }) => group_key === "collection");
-
-  return {
-    model: "metadata",
-    /**
-     * We technically don't have a metadata address anymore.
-     * So we are using the asset's id as the address
-     */
-    address: Pda.find(BUBBLEGUM_PROGRAM_ID, [
-      Buffer.from("asset", "utf-8"),
-      new PublicKey(input.compression.tree).toBuffer(),
-      Uint8Array.from(new BN(input.compression.leaf_id).toArray("le", 8)),
-    ]),
-    mintAddress: new PublicKey(input.id),
-    updateAuthorityAddress: new PublicKey(updateAuthority!.address),
-
-    name: input.content.metadata?.name ?? "",
-    symbol: input.content.metadata?.symbol ?? "",
-
-    json: input.content.metadata,
-    jsonLoaded: true,
-    uri: input.content.json_uri,
-    isMutable: input.mutable,
-
-    primarySaleHappened: input.royalty.primary_sale_happened,
-    sellerFeeBasisPoints: input.royalty.basis_points,
-    creators: input.creators,
-
-    editionNonce: input.supply.edition_nonce,
-    tokenStandard: TokenStandard.NonFungible,
-
-    collection: collection
-      ? { address: new PublicKey(collection.group_value), verified: false }
-      : null,
-
-    // Current regular `Metadata` does not currently have a `compression` value
-    // @ts-ignore
-    compression: input.compression,
-
-    // Read API doesn't return this info, yet
-    collectionDetails: null,
-    // Read API doesn't return this info, yet
-    uses: null,
-    // Read API doesn't return this info, yet
-    programmableConfig: null,
   };
 };
 
